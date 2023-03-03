@@ -13,7 +13,7 @@ class MainPage:
         self.search_frame = None
 
         self.root = master
-        self.root.title('证券可视化平台')
+        self.root.title('A股K线图查询')
         self.root.geometry('1280x800')
         self.creat_page()
 

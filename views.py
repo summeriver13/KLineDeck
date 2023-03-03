@@ -107,7 +107,11 @@ class AboutFrame(tk.Frame):
     def __init__(self, root):
         super().__init__(root)
         tk.Label(self, text='关于作品： 本作品由tkinter、baostock、mpfinance制作').pack()
-        tk.Label(self, text='关于作者： 电子18 谢磊').pack()
+        tk.Label(self, text='关于作者： 计20-1 第9组').pack()
+        tk.Label(self, text='202010201072 江夏（需求分析-数据分析)').pack()
+        tk.Label(self, text='202010201075 呼佳琪（需求分析-功能分析）').pack()
+        tk.Label(self, text='202010201074 刘彗波（概要设计）').pack()
+        tk.Label(self, text='202010201069 刘星辰（详细设计）').pack()
 
 
 if __name__ == '__main__':
