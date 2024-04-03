@@ -9,7 +9,7 @@
 ```bash
 pip install baostock
 pip install matplotlib
-pip install mpfinance
+pip install mplfinance
 pip install pandas
 pip install numpy
 ```
