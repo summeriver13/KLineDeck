@@ -7,11 +7,7 @@
 ### 安装依赖
 
 ```bash
-pip install baostock
-pip install matplotlib
-pip install mplfinance
-pip install pandas
-pip install numpy
+pip install baostock matplotlib mplfinance pandas numpy
 ```
 
 ### 运行方法
