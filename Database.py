@@ -1,179 +1,215 @@
+"""数据层：Baostock 行情查询、K 线缓存与绘图。"""
+
+from __future__ import annotations
+
+import threading
+from contextlib import contextmanager
+from datetime import date
+from typing import Any, Iterator
+
 import baostock as bs
-import matplotlib.pyplot as plt
-import pandas as pd
-import numpy as np
 import mplfinance as mpf
-import time
+import pandas as pd
+
+KLINE_FIELDS = "date,code,open,high,low,close,volume,turn,pctChg"
+START_DATE = {"d": "2020-01-01", "w": "2020-01-01", "m": "2010-01-01"}
+FREQ_NAMES = {"d": "日K", "w": "周K", "m": "月K"}
+DEFAULT_BARS = 100
+SHARES_PER_WAN_HAND = 1_000_000  # baostock 的 volume 单位是股，1 万手 = 100 万股
+BACKGROUND = "#d1d4d9"  # 原 (0.82, 0.83, 0.85)，新版 mplfinance 只接受颜色字符串
+
+_session_lock = threading.Lock()
 
 
-# 模糊搜索获取股票代码
-class Stock:
-    def __init__(self, name):
-        self.name = name
-        self.code = None
-        self.code_name = None
-        self.data = self.get_data()
-
-    # 获取数据
-    def get_data(self):
-        lg = bs.login()
-
-        print('login respond  error_msg:' + lg.error_msg)
-        rs = bs.query_stock_basic(code_name=self.name)  # 支持模糊查询
-        print('query_stock_basic respond error_code:' + rs.error_code)
-        print('query_stock_basic respond  error_msg:' + rs.error_msg)
-        data_list = []
-        while (rs.error_code == '0') & rs.next():
-            data_list.append(rs.get_row_data())
-        result = pd.DataFrame(data_list, columns=rs.fields)
-        result.to_csv("stock_basic.csv", encoding="gbk", index=False)
-        print(result)
-
-        bs.logout()
-
-        # 数据处理 只保留 股票代码和股票名称两列
-        code_list = pd.read_csv('stock_basic.csv', encoding="gbk", usecols=[0, 1])
-        return code_list.values.tolist()
-
-    # 搜索名称改变事件
-    def change_name(self, name):
-        self.name = name
-        self.data = self.get_data()
+class DataError(RuntimeError):
+    """行情查询失败。"""
 
 
-# K线图视觉参数设置 调整为中国股市视觉习惯 红涨绿跌
-# 设置mplfinance的蜡烛颜色，up为阳线颜色，down为阴线颜色
-my_color = mpf.make_marketcolors(up='r',
-                                 down='g',
-                                 edge='inherit',
-                                 wick='inherit',
-                                 volume='inherit')
-# 设置图表的背景色
-my_style = mpf.make_mpf_style(marketcolors=my_color,
-                              figcolor='(0.82, 0.83, 0.85)',
-                              gridcolor='(0.82, 0.83, 0.85)')
-
-# 标题字体
-title_font = {'fontname': 'SimHei',
-              'size': '16',
-              'color': 'black',
-              'weight': 'bold',
-              'va': 'bottom',
-              'ha': 'center'}
-
-# 一般 标签 字体
-normal_label_font = {'fontname': 'SimHei',
-                     'size': '12',
-                     'color': 'black',
-                     'va': 'bottom',
-                     'ha': 'right'}
-# 大号红色字体
-large_red_font = {'fontname': 'Arial',
-                  'size': '16',
-                  'color': 'red',
-                  'weight': 'bold',
-                  'va': 'bottom'}
-# 小号红色字体
-small_red_font = {'fontname': 'Arial',
-                  'size': '12',
-                  'color': 'red',
-                  'weight': 'bold',
-                  'va': 'bottom'}
-# 小号绿色字体
-small_green_font = {'fontname': 'Arial',
-                    'size': '12',
-                    'color': 'green',
-                    'weight': 'bold',
-                    'va': 'bottom'}
-# 普通字体
-normal_font = {'fontname': 'Arial',
-               'size': '12',
-               'color': 'black',
-               'va': 'bottom',
-               'ha': 'left'}
+@contextmanager
+def _session() -> Iterator[None]:
+    # baostock 的登录状态是进程级全局变量，并发调用会互相顶掉，这里串行化
+    with _session_lock:
+        login = bs.login()
+        if login.error_code != "0":
+            raise DataError(f"登录 Baostock 失败：{login.error_msg}")
+        try:
+            yield
+        finally:
+            bs.logout()
 
 
-# k线图 类
+def _fetch_rows(result: Any) -> list[list[str]]:
+    if result.error_code != "0":
+        raise DataError(result.error_msg)
+    rows: list[list[str]] = []
+    while result.next():
+        rows.append(result.get_row_data())
+    return rows
+
+
+def search_stocks(keyword: str) -> list[tuple[str, str]]:
+    """按名称模糊搜索在市 A 股，返回 [(代码, 名称)]。"""
+    keyword = keyword.strip()
+    if not keyword:
+        return []
+    with _session():
+        result = bs.query_stock_basic(code_name=keyword)
+        rows = _fetch_rows(result)
+    records = [dict(zip(result.fields, row)) for row in rows]
+    return [
+        (record["code"], record["code_name"])
+        for record in records
+        if record["type"] == "1" and record["status"] == "1"
+    ]
+
+
+def fetch_kline(code: str, freq: str) -> pd.DataFrame:
+    """取一只股票的某个周期 K 线：日期作索引，其余列为数值。"""
+    if freq not in START_DATE:
+        raise ValueError(f"未知周期：{freq}")
+    with _session():
+        result = bs.query_history_k_data_plus(
+            code,
+            KLINE_FIELDS,
+            start_date=START_DATE[freq],
+            end_date=date.today().isoformat(),
+            frequency=freq,
+            adjustflag="3",
+        )
+        rows = _fetch_rows(result)
+    if not rows:
+        raise DataError(f"{code} 自 {START_DATE[freq]} 起没有 {FREQ_NAMES[freq]} 数据")
+    frame = pd.DataFrame(rows, columns=result.fields)
+    frame["date"] = pd.to_datetime(frame["date"])
+    frame = frame.drop(columns=["code"]).set_index("date")
+    return frame.apply(pd.to_numeric, errors="coerce")
+
+
+# 视觉参数：中国股市习惯，红涨绿跌
+my_color = mpf.make_marketcolors(
+    up="r", down="g", edge="inherit", wick="inherit", volume="inherit"
+)
+my_style = mpf.make_mpf_style(
+    marketcolors=my_color, figcolor=BACKGROUND, gridcolor=BACKGROUND
+)
+
+title_font = {
+    "fontname": "SimHei",
+    "size": "16",
+    "color": "black",
+    "va": "bottom",
+    "ha": "center",
+}
+normal_label_font = {
+    "fontname": "SimHei",
+    "size": "12",
+    "color": "black",
+    "va": "bottom",
+    "ha": "left",
+}
+large_red_font = {
+    "fontname": "Arial",
+    "size": "16",
+    "color": "red",
+    "weight": "bold",
+    "va": "bottom",
+    "ha": "left",
+}
+large_green_font = {
+    "fontname": "Arial",
+    "size": "16",
+    "color": "green",
+    "weight": "bold",
+    "va": "bottom",
+    "ha": "left",
+}
+small_red_font = {
+    "fontname": "Arial",
+    "size": "12",
+    "color": "red",
+    "weight": "bold",
+    "va": "bottom",
+    "ha": "left",
+}
+small_green_font = {
+    "fontname": "Arial",
+    "size": "12",
+    "color": "green",
+    "weight": "bold",
+    "va": "bottom",
+    "ha": "left",
+}
+normal_font = {
+    "fontname": "Arial",
+    "size": "12",
+    "color": "black",
+    "va": "bottom",
+    "ha": "left",
+}
+
+
 class Candle:
-    def __init__(self, code, code_name):
+    """一只股票的 K 线数据，按周期惰性加载并缓存。"""
+
+    def __init__(self, code: str, name: str) -> None:
         self.code = code
-        self.code_name = code_name
-        self.start_date_day = '2020-1-01'
-        self.start_date_week = '2020-1-01'
-        self.start_date_mouth = '2010-1-01'
-        self.end_date = time.strftime('%Y-%m-%d', time.localtime())
+        self.name = name
+        self._frames: dict[str, pd.DataFrame] = {}
 
-        self.my_style = my_style
-
-        # k线数据 分 日 周 月
-        self.day = self.get_data("d", self.start_date_day)
-        self.week = self.get_data("w", self.start_date_week)
-        self.mouth = self.get_data("m", self.start_date_mouth)
-
-        self.fig = None
-
-    # 数据更改事件
-    def change_data(self, code, code_name):
+    def update(self, code: str, name: str) -> None:
         self.code = code
-        self.code_name = code_name
-        self.day = self.get_data("d", self.start_date_day)
-        self.week = self.get_data("w", self.start_date_week)
-        self.mouth = self.get_data("m", self.start_date_mouth)
+        self.name = name
+        self._frames.clear()
 
-    # 数据获取
-    def get_data(self, fq, start_date):
-        bs.login()
+    def frame(self, freq: str) -> pd.DataFrame:
+        if freq not in self._frames:
+            self._frames[freq] = fetch_kline(self.code, freq)
+        return self._frames[freq]
 
-        rs = bs.query_history_k_data_plus(self.code,
-                                          "date,code,open,high,low,close,volume,turn,pctChg",
-                                          start_date=start_date, end_date=self.end_date,
-                                          frequency=fq, adjustflag="3")
-        data_list = []
-        while (rs.error_code == '0') & rs.next():
-            data_list.append(rs.get_row_data())
-        result = pd.DataFrame(data_list, columns=rs.fields)
-        result.to_csv("data.csv", index=False)
-        print(result)
+    def make_figure(self, data: pd.DataFrame, freq: str) -> mpf.Mpf_Figure:
+        plot_data = data.iloc[-DEFAULT_BARS:]
+        last = plot_data.iloc[-1]
+        rising = last["close"] >= last["open"]
+        figure = mpf.figure(style=my_style, figsize=(12, 8), facecolor=BACKGROUND)
+        ax1 = figure.add_axes([0.06, 0.25, 0.88, 0.60])
+        ax2 = figure.add_axes([0.06, 0.15, 0.88, 0.10], sharex=ax1)
+        ax1.set_ylabel("price")
+        ax2.set_ylabel("volume")
+        figure.text(
+            0.50,
+            0.95,
+            f"{self.code} - {self.name}（{FREQ_NAMES[freq]}）",
+            **title_font,
+        )
+        self._quote_text(figure, last, rising)
+        mpf.plot(plot_data, ax=ax1, volume=ax2, type="candle", style=my_style)
+        return figure
 
-        bs.logout()
-
-        # 数据处理 删除股票代码列
-        return pd.read_csv('data.csv', index_col=0, parse_dates=True, usecols=[0, 2, 3, 4, 5, 6, 7, 8])
-
-    # K线绘图
-    def creat_figure(self, data):
-        plot_data = data.iloc[-101:-1]
-        last_data = plot_data.iloc[-1]
-        self.fig = mpf.figure(style=my_style, figsize=(12, 8), facecolor=(0.82, 0.83, 0.85))
-        ax1 = self.fig.add_axes([0.06, 0.25, 0.88, 0.60])
-        ax2 = self.fig.add_axes([0.06, 0.15, 0.88, 0.10], sharex=ax1)
-        ax1.set_ylabel('price')
-        ax2.set_ylabel('volume')
-        t1 = self.fig.text(0.50, 0.95, db_candle.code+' - '+db_candle.code_name, **title_font)
-        t2 = self.fig.text(0.10, 0.90, '开盘价: ', **normal_label_font)
-        t2 = self.fig.text(0.10, 0.90, f'{np.round(last_data["open"], 3)}', **small_red_font)
-        t3 = self.fig.text(0.10, 0.86, '收盘价: ', **normal_label_font)
-        t4 = self.fig.text(0.10, 0.86, f'{np.round(last_data["close"], 3)}', **small_green_font)
-        t5 = self.fig.text(0.30, 0.90, '最高价: ', **normal_label_font)
-        t6 = self.fig.text(0.30, 0.90, f'{last_data["high"]}', **small_red_font)
-        t7 = self.fig.text(0.30, 0.86, '最低价: ', **normal_label_font)
-        t8 = self.fig.text(0.30, 0.86, f'{last_data["low"]}', **small_green_font)
-        t9 = self.fig.text(0.50, 0.90, '换手率: ', **normal_label_font)
-        t10 = self.fig.text(0.50, 0.90, f'{last_data["turn"]}', **normal_font)
-        t11 = self.fig.text(0.50, 0.86, '涨跌幅: ', **normal_label_font)
-        t12 = self.fig.text(0.50, 0.86, f'{last_data["pctChg"]}', **normal_font)
-        t13 = self.fig.text(0.70, 0.90, '成交量(万手): ', **normal_label_font)
-        t14 = self.fig.text(0.70, 0.90, f'{np.round(last_data["volume"] / 10000, 3)}', **normal_font)
-        mpf.plot(plot_data,
-                 ax=ax1,
-                 volume=ax2,
-                 type='candle',
-                 style=self.my_style)
-        return self.fig
-
-
-db_stock = Stock('特斯拉')
-db_candle = Candle('sh.000001', '浦发银行')
-
-if __name__ == '__main__':
-    a = Candle('sh.000001', 'name')
+    @staticmethod
+    def _quote_text(figure: Any, last: pd.Series, rising: bool) -> None:
+        price_font = large_red_font if rising else large_green_font
+        detail_font = small_red_font if rising else small_green_font
+        change_font = normal_font
+        if last["pctChg"] > 0:
+            change_font = small_red_font
+        elif last["pctChg"] < 0:
+            change_font = small_green_font
+        items = [
+            (0.06, 0.11, 0.90, "开: ", f"{last['open']:.2f}", price_font),
+            (0.06, 0.11, 0.86, "收: ", f"{last['close']:.2f}", price_font),
+            (0.20, 0.25, 0.90, "高: ", f"{last['high']:.2f}", detail_font),
+            (0.20, 0.25, 0.86, "低: ", f"{last['low']:.2f}", detail_font),
+            (0.34, 0.40, 0.90, "换手: ", f"{last['turn']:.2f}%", normal_font),
+            (0.34, 0.40, 0.86, "涨跌: ", f"{last['pctChg']:.2f}%", change_font),
+            (
+                0.52,
+                0.64,
+                0.90,
+                "量(万手): ",
+                f"{last['volume'] / SHARES_PER_WAN_HAND:.2f}",
+                normal_font,
+            ),
+        ]
+        for label_x, value_x, y, label, value, value_font in items:
+            figure.text(label_x, y, label, **normal_label_font)
+            figure.text(value_x, y, value, **value_font)
