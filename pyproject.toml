@@ -1,11 +1,15 @@
 [project]
 name = "candleline"
-version = "0.1.0"
-description = "A 股 K 线图查询（baostock + mplfinance + tkinter）"
+version = "0.2.0"
+description = "A 股 K 线终端（Qt + pyqtgraph + Baostock）"
 requires-python = ">=3.12"
 dependencies = [
     "baostock>=0.9.4",
-    "matplotlib>=3.8",
-    "mplfinance>=0.12.10b0",
-    "pandas>=2.2",
+    "numpy>=2.5.4",
+    "pyqtgraph>=0.14.0",
+    "pyside6>=6.12.0",
 ]
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
