@@ -24,7 +24,7 @@ uv run python main.py
 ```
 
 首次查询需要联网，之后走本地缓存。Baostock 免费、无需 token。自选股保存在系统配置目录，Windows 下是
-`%APPDATA%/CandleLine/CandleLine/watchlist.json`；K 线缓存在 `%LOCALAPPDATA%/CandleLine/cache`，
+`%APPDATA%/CandleLine/CandleLine/watchlist.json`；K 线缓存在 `%LOCALAPPDATA%/CandleLine/cache/<数据源>/`，
 也可用环境变量 `CANDLELINE_CACHE_DIR` 指定。缓存 6 小时后增量刷新，除权导致复权价变化时会自动整段重取。
 
 ## 结构
@@ -33,7 +33,9 @@ uv run python main.py
 | --- | --- |
 | `main.py` | 入口：QApplication、主题、主窗口 |
 | `candleline/models.py` | `Stock` / `Bars` / `DataError` |
-| `candleline/data.py` | Baostock 会话、复权 K 线解析、缓存调度 |
+| `candleline/data.py` | 数据源调度、缓存与增量刷新 |
+| `candleline/sources/base.py` | `MarketDataSource` 接口 |
+| `candleline/sources/baostock_source.py` | Baostock 会话、搜索与复权 K 线解析 |
 | `candleline/cache.py` | npz 缓存、增量合并、复权因子校验 |
 | `candleline/chart.py` | K 线控件：蜡烛、成交量、均线、十字光标、缩放 |
 | `candleline/items.py` | 蜡烛图元、日期轴、均线计算 |
@@ -41,6 +43,24 @@ uv run python main.py
 | `candleline/toolbar.py` | 周期、复权、区间、MA 与导出 |
 | `candleline/window.py` | 主窗口、异步加载、完整历史补全 |
 | `candleline/theme.py` | 配色与 QSS |
+
+## 扩展数据源
+
+默认使用 Baostock。新增数据源只需实现 `MarketDataSource` 的三个方法，并在创建窗口前注册：
+
+```python
+from candleline import data
+
+class MySource:
+    name = "my"
+    def full_start(self, freq: str) -> str: ...
+    def search(self, keyword: str): ...
+    def fetch(self, code, freq, adjust, is_index, start): ...
+
+data.set_source(MySource())
+```
+
+搜索与 K 线都会走同一数据源；缓存按 `name` 隔离，不会与 Baostock 的缓存混用。
 
 ## 性能
 
