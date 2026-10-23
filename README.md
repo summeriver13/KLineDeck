@@ -1,6 +1,6 @@
-# CandleLine
+# KLineDeck
 
-A 股 K 线终端：Qt + pyqtgraph 自绘蜡烛图，行情来自 Baostock。
+A 股 K 线工作台：Qt + pyqtgraph 自绘蜡烛图，行情来自 Baostock。
 
 ![界面](docs/preview.png)
 
@@ -27,44 +27,45 @@ uv run python main.py
 ```
 
 首次查询需要联网，之后走本地缓存。Baostock 免费、无需 token。自选股保存在系统配置目录，Windows 下是
-`%APPDATA%/CandleLine/CandleLine/watchlist.json`；K 线缓存在 `%LOCALAPPDATA%/CandleLine/cache/<数据源>/`，
-也可用环境变量 `CANDLELINE_CACHE_DIR` 指定。缓存 6 小时后增量刷新，除权导致复权价变化时会自动整段重取。
+`%LOCALAPPDATA%/KLineDeck/KLineDeck/watchlist.json`；K 线缓存在 `%LOCALAPPDATA%/KLineDeck/cache/<数据源>/`，
+也可用环境变量 `KLINEDECK_CACHE_DIR` 指定。缓存 6 小时后增量刷新，除权导致复权价变化时会自动整段重取。
+旧版 CandleLine 的缓存与自选会在首次启动时自动复制到新目录。
 
 ## 结构
 
 | 路径 | 职责 |
 | --- | --- |
 | `main.py` | 入口：QApplication、主题、主窗口 |
-| `candleline/models.py` | `Stock` / `Bars` / `DataError` |
-| `candleline/data.py` | 数据源调度、缓存与增量刷新 |
-| `candleline/sources/base.py` | `MarketDataSource` 接口 |
-| `candleline/sources/baostock_source.py` | Baostock 会话、搜索与复权 K 线解析 |
-| `candleline/cache.py` | npz 缓存、增量合并、复权因子校验 |
-| `candleline/chart.py` | K 线控件：价格、成交量、副图、十字光标、缩放 |
-| `candleline/chart_view.py` | 区间映射、视口保持与补历史触发 |
-| `candleline/header.py` | 名称、代码、最新价与涨跌 |
-| `candleline/stock_directory.py` | 本地 A 股/指数目录搜索 |
-| `candleline/stock_directory.csv` | 目录快照（约 5500 条） |
-| `candleline/items.py` | 蜡烛图元、日期轴、均线计算 |
-| `candleline/indicators.py` | SMA/EMA/MACD/KDJ/RSI/BOLL 计算 |
-| `candleline/indicator_panel.py` | MACD/KDJ/RSI 副图绘制与读数 |
-| `candleline/overlays.py` | BOLL、成交量均线、最新价线 |
-| `candleline/crosshair.py` | 跨价格/成交量/副图的十字光标 |
-| `candleline/info.py` | OHLC、均线与指标信息栏 |
-| `candleline/sidebar.py` | 搜索与自选 |
-| `candleline/toolbar.py` | 周期、复权、区间、叠加指标与导出 |
-| `candleline/window.py` | 主窗口、异步加载、完整历史补全与向左补历史 |
-| `candleline/window_layout.py` | 中央布局与状态栏 |
+| `klinedeck/models.py` | `Stock` / `Bars` / `DataError` |
+| `klinedeck/data.py` | 数据源调度、缓存与增量刷新 |
+| `klinedeck/sources/base.py` | `MarketDataSource` 接口 |
+| `klinedeck/sources/baostock_source.py` | Baostock 会话、搜索与复权 K 线解析 |
+| `klinedeck/cache.py` | npz 缓存、增量合并、复权因子校验 |
+| `klinedeck/chart.py` | K 线控件：价格、成交量、副图、十字光标、缩放 |
+| `klinedeck/chart_view.py` | 区间映射、视口保持与补历史触发 |
+| `klinedeck/header.py` | 名称、代码、最新价与涨跌 |
+| `klinedeck/stock_directory.py` | 本地 A 股/指数目录搜索 |
+| `klinedeck/stock_directory.csv` | 目录快照（约 5500 条） |
+| `klinedeck/items.py` | 蜡烛图元、日期轴、均线计算 |
+| `klinedeck/indicators.py` | SMA/EMA/MACD/KDJ/RSI/BOLL 计算 |
+| `klinedeck/indicator_panel.py` | MACD/KDJ/RSI 副图绘制与读数 |
+| `klinedeck/overlays.py` | BOLL、成交量均线、最新价线 |
+| `klinedeck/crosshair.py` | 跨价格/成交量/副图的十字光标 |
+| `klinedeck/info.py` | OHLC、均线与指标信息栏 |
+| `klinedeck/sidebar.py` | 搜索与自选 |
+| `klinedeck/toolbar.py` | 周期、复权、区间、叠加指标与导出 |
+| `klinedeck/window.py` | 主窗口、异步加载、完整历史补全与向左补历史 |
+| `klinedeck/window_layout.py` | 中央布局与状态栏 |
 | `tests/test_indicators.py` | 指标公式回归测试 |
-| `tests/test_data.py` | 向前补历史与缓存合并测试 |
-| `candleline/theme.py` | 配色与 QSS |
+| `tests/test_data.py` | 向前补历史、缓存合并与本地目录测试 |
+| `klinedeck/theme.py` | 配色与 QSS |
 
 ## 扩展数据源
 
 默认使用 Baostock。新增数据源只需实现 `MarketDataSource` 的三个方法，并在创建窗口前注册：
 
 ```python
-from candleline import data
+from klinedeck import data
 
 class MySource:
     name = "my"
