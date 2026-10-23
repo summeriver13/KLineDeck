@@ -97,6 +97,10 @@ class ChartWidget(QWidget):
         plot.getViewBox().setMouseEnabled(x=True, y=False)
         plot.getViewBox().setDefaultPadding(0.02)
 
+    @property
+    def bars(self) -> Bars | None:
+        return self._bars
+
     def set_bars(self, bars: Bars) -> None:
         self._bars = bars
         self._clear_items()

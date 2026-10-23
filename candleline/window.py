@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, QThreadPool
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -17,18 +15,18 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QSplitter,
-    QToolBar,
     QVBoxLayout,
     QWidget,
 )
 
 from . import data
-from .chart import RANGE_LABELS, ChartWidget
+from .chart import ChartWidget
 from .data import ADJUST_LABELS, FREQ_LABELS, Bars, Stock
 from .sidebar import Sidebar
 from .store import Watchlist
 from .tasks import Dispatcher, Worker
 from .theme import BG, DOWN, MUTED, UP
+from .toolbar import build_toolbar
 
 
 class MainWindow(QMainWindow):
@@ -48,9 +46,25 @@ class MainWindow(QMainWindow):
         self._dispatch = Dispatcher(self)
         self._dispatch.done.connect(self._bars_ok)
         self._dispatch.failed.connect(self._bars_fail)
+        self._full_token = 0
+        self._full_pending = False
+        self._full_dispatch = Dispatcher(self)
+        self._full_dispatch.done.connect(self._full_ok)
+        self._full_dispatch.failed.connect(self._full_fail)
         self._watchlist = Watchlist()
 
         self._build()
+        self.ma_action = build_toolbar(
+            self,
+            freq=self._freq,
+            adjust=self._adjust,
+            range_key=self._range,
+            on_freq=self._set_freq,
+            on_adjust=self._set_adjust,
+            on_range=self._set_range,
+            on_ma=self.chart.set_ma_visible,
+            on_export=self._export,
+        )
         self._install_shortcuts()
         start = (
             self._watchlist.items[0]
@@ -60,7 +74,6 @@ class MainWindow(QMainWindow):
         self._load_stock(start)
 
     def _build(self) -> None:
-        self._build_toolbar()
         self.sidebar = Sidebar(self._watchlist)
         self.sidebar.stockActivated.connect(self._load_stock)
         self.chart = ChartWidget()
@@ -90,67 +103,6 @@ class MainWindow(QMainWindow):
         status.addWidget(self.status, 1)
         status.addPermanentWidget(self.busy)
         status.addPermanentWidget(self.source)
-
-    def _build_toolbar(self) -> None:
-        toolbar = QToolBar("main")
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
-        self._add_group(
-            toolbar,
-            "周期",
-            [("d", "日K"), ("w", "周K"), ("m", "月K")],
-            self._freq,
-            self._set_freq,
-        )
-        self._add_group(
-            toolbar,
-            "复权",
-            [("qfq", "前复权"), ("hfq", "后复权"), ("none", "不复权")],
-            self._adjust,
-            self._set_adjust,
-        )
-        self._add_group(
-            toolbar,
-            "区间",
-            list(RANGE_LABELS.items()),
-            self._range,
-            self._set_range,
-        )
-        self.ma_action = QAction("MA", self)
-        self.ma_action.setCheckable(True)
-        self.ma_action.setChecked(True)
-        self.ma_action.triggered.connect(
-            lambda checked: self.chart.set_ma_visible(checked)
-        )
-        toolbar.addAction(self.ma_action)
-        toolbar.addSeparator()
-        export = QAction("导出 PNG", self)
-        export.triggered.connect(self._export)
-        toolbar.addAction(export)
-
-    def _add_group(
-        self,
-        toolbar: QToolBar,
-        title: str,
-        options: list[tuple[str, str]],
-        current: str,
-        callback: Callable[[str], None],
-    ) -> None:
-        label = QLabel(title)
-        label.setObjectName("hint")
-        toolbar.addWidget(label)
-        group = QActionGroup(self)
-        group.setExclusive(True)
-        for key, text in options:
-            action = QAction(text, self)
-            action.setCheckable(True)
-            action.setData(key)
-            action.triggered.connect(lambda checked=False, k=key: callback(k))
-            group.addAction(action)
-            toolbar.addAction(action)
-            if key == current:
-                action.setChecked(True)
-        toolbar.addSeparator()
 
     def _build_header(self) -> QFrame:
         frame = QFrame()
@@ -193,10 +145,14 @@ class MainWindow(QMainWindow):
         self._reload()
 
     def _reload(self) -> None:
+        self._full_token += 1
+        self._full_pending = False
         key = (self._stock.code, self._freq, self._adjust)
         cached = self._cache.get(key)
         if cached is not None:
             self._render(cached)
+            if self._range == "all" and not cached.full:
+                self._load_full_history()
             return
         self._bars_token += 1
         token = self._bars_token
@@ -218,6 +174,8 @@ class MainWindow(QMainWindow):
         self._cache[(bars.code, bars.freq, bars.adjust)] = bars
         self._set_busy(None)
         self._render(bars)
+        if self._range == "all" and not bars.full:
+            self._load_full_history()
 
     def _bars_fail(self, token: int, message: str) -> None:
         if token != self._bars_token:
@@ -268,6 +226,45 @@ class MainWindow(QMainWindow):
     def _set_range(self, key: str) -> None:
         self._range = key
         self.chart.set_range(key)
+        bars = self.chart.bars
+        if key == "all" and bars is not None and not bars.full:
+            self._load_full_history()
+
+    def _load_full_history(self) -> None:
+        if self._full_pending:
+            return
+        self._full_pending = True
+        self._full_token += 1
+        self._set_busy(f"正在加载 {self._stock.name} 的全部历史…")
+        worker = Worker(
+            self._full_dispatch,
+            self._full_token,
+            data.fetch_bars,
+            self._stock.code,
+            self._freq,
+            self._adjust,
+            self._stock.is_index,
+            True,
+        )
+        QThreadPool.globalInstance().start(worker)
+
+    def _full_ok(self, token: int, bars: Bars) -> None:
+        if token != self._full_token:
+            return
+        self._full_pending = False
+        self._set_busy(None)
+        if not bars.full:
+            self.status.setText("完整历史暂不可用，已显示最近数据")
+            return
+        self._cache[(bars.code, bars.freq, bars.adjust)] = bars
+        self._render(bars)
+
+    def _full_fail(self, token: int, message: str) -> None:
+        if token != self._full_token:
+            return
+        self._full_pending = False
+        self._set_busy(None)
+        self.status.setText(f"完整历史加载失败：{message}")
 
     def _set_busy(self, message: str | None) -> None:
         if message is None:
