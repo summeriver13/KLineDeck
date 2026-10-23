@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import socket
 import threading
 from contextlib import suppress
 from datetime import date
@@ -10,7 +11,9 @@ from typing import Any, Callable, TypeVar
 
 import baostock as bs
 import numpy as np
+from baostock.common import context as bs_context
 
+from .. import stock_directory
 from ..models import Bars, DataError, Stock
 
 FIELDS_DAILY = "date,open,high,low,close,preclose,volume,amount,turn,pctChg"
@@ -19,20 +22,36 @@ ADJUST_FLAGS = {"qfq": "2", "hfq": "1", "none": "3"}  # 前复权 / 后复权 / 
 FULL_START = {"d": "2010-01-01", "w": "2005-01-01", "m": "2000-01-01"}
 STOCK_PREFIXES = ("sh.60", "sh.68", "sz.00", "sz.30")
 INDEX_PREFIXES = ("sh.000", "sz.399")
+LOGIN_TIMEOUT = 8
+QUERY_TIMEOUT = 90
+SEARCH_TIMEOUT = 8
 
 _session_lock = threading.Lock()
 _logged_in = False
 T = TypeVar("T")
 
 
+def _set_socket_timeout(seconds: float) -> None:
+    sock = getattr(bs_context, "default_socket", None)
+    if sock is not None:
+        with suppress(OSError):
+            sock.settimeout(seconds)
+
+
 def _login() -> None:
     global _logged_in
     if _logged_in:
         return
-    result = bs.login()
+    previous = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(LOGIN_TIMEOUT)
+    try:
+        result = bs.login()
+    finally:
+        socket.setdefaulttimeout(previous)
     if result.error_code != "0":
         raise DataError(f"登录 Baostock 失败：{result.error_msg}")
     _logged_in = True
+    _set_socket_timeout(QUERY_TIMEOUT)
 
 
 def _logout() -> None:
@@ -88,6 +107,7 @@ def _parse(
     index = {name: position for position, name in enumerate(fields)}
     dates = np.array([row[index["date"]] for row in rows], dtype="datetime64[D]")
     close = _column(rows, index["close"])
+    volume = np.nan_to_num(_column(rows, index["volume"]), nan=0.0)
     if "preclose" in index:
         preclose = _column(rows, index["preclose"])
     else:
@@ -106,7 +126,7 @@ def _parse(
         low=_column(rows, index["low"])[valid],
         close=close[valid],
         preclose=preclose[valid],
-        volume=_column(rows, index["volume"])[valid],
+        volume=volume[valid],
         amount=_column(rows, index["amount"])[valid],
         turn=_column(rows, index["turn"])[valid],
         pct_chg=_column(rows, index["pctChg"])[valid],
@@ -123,10 +143,17 @@ class BaostockSource:
         keyword = keyword.strip()
         if not keyword:
             return []
+        local = stock_directory.search(keyword)
+        if local is not None:
+            return local
 
         def action() -> tuple[list[str], list[list[str]]]:
-            result = bs.query_stock_basic(code_name=keyword)
-            return list(result.fields), _rows(result)
+            _set_socket_timeout(SEARCH_TIMEOUT)
+            try:
+                result = bs.query_stock_basic(code_name=keyword)
+                return list(result.fields), _rows(result)
+            finally:
+                _set_socket_timeout(QUERY_TIMEOUT)
 
         fields, rows = _call(action)
         stocks: list[Stock] = []
@@ -148,6 +175,7 @@ class BaostockSource:
         adjust: str,
         is_index: bool,
         start: str,
+        end: str | None = None,
     ) -> Bars:
         fields_text = FIELDS_DAILY if freq == "d" else FIELDS_PERIOD
 
@@ -156,7 +184,7 @@ class BaostockSource:
                 code,
                 fields_text,
                 start_date=start,
-                end_date=date.today().isoformat(),
+                end_date=end or date.today().isoformat(),
                 frequency=freq,
                 adjustflag=ADJUST_FLAGS[adjust],
             )

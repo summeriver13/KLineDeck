@@ -1,4 +1,4 @@
-"""K 线图控件：蜡烛、成交量、均线、十字光标与区间缩放。"""
+"""K 线图控件：蜡烛、成交量、副图指标、十字光标与区间缩放。"""
 
 from __future__ import annotations
 
@@ -6,79 +6,89 @@ from collections.abc import Sequence
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtCore import QEvent, Signal
+from PySide6.QtWidgets import QVBoxLayout, QWidget
 
+from .chart_view import (
+    HistoryGate,
+    configure_plot,
+    range_start,
+    set_view_dates,
+    visible_dates,
+)
+from .crosshair import Crosshair
 from .data import Bars
+from .indicator_panel import IndicatorPanel
+from .info import InfoBar
 from .items import CandleItem, DateAxis, moving_average
-from .theme import BG, BORDER, DOWN, FAINT, GRID, MA_COLORS, MUTED, TEXT, UP
+from .overlays import BollOverlay, LastPriceLine, VolumeMAOverlay
+from .theme import BG, BORDER, DOWN, MA_COLORS, MUTED, UP
 
 MA_PERIODS = tuple(MA_COLORS)
-RANGE_DAYS = {"1m": 30, "3m": 90, "6m": 180, "1y": 365, "3y": 1095, "all": None}
-RANGE_LABELS = {"1m": "1月", "3m": "3月", "6m": "6月", "1y": "1年", "3y": "3年", "all": "全部"}
+DENSE_BARS = 900
 
 
 class ChartWidget(QWidget):
+    history_needed = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._bars: Bars | None = None
         self._candle: CandleItem | None = None
+        self._close_line: pg.PlotDataItem | None = None
         self._volume_bars: pg.BarGraphItem | None = None
         self._ma_items: dict[int, pg.PlotDataItem] = {}
         self._ma_values: dict[int, np.ndarray] = {}
-        self._last_line: pg.InfiniteLine | None = None
+        self._hover_index: int | None = None
         self._ma_visible = True
         self._range_key = "1y"
+        self._history = HistoryGate()
         self._volume_factor = 1e6
         self._volume_unit = "万手"
 
-        self.info = QLabel()
-        self.info.setObjectName("info")
-        self.info.setTextFormat(Qt.TextFormat.RichText)
-        self.info.setText("等待行情数据…")
-        self.info.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
-        )
-
+        self.info = InfoBar()
         self.glw = pg.GraphicsLayoutWidget()
         self.glw.setBackground(BG)
         self.price = self.glw.addPlot(row=0, col=0)
         self.volume = self.glw.addPlot(row=1, col=0)
-        self.glw.ci.layout.setRowStretchFactor(0, 4)
+        self.indicator = IndicatorPanel()
+        self.glw.addItem(self.indicator.plot, row=2, col=0)
+        self.glw.ci.layout.setRowStretchFactor(0, 5)
         self.glw.ci.layout.setRowStretchFactor(1, 1)
+        self.glw.ci.layout.setRowStretchFactor(2, 2)
 
-        self._configure_plot(self.price, bottom=False)
-        self._configure_plot(self.volume, bottom=True)
-        self.price.hideAxis("bottom")
-        self.price.showAxis("right")
+        configure_plot(self.price)
+        configure_plot(self.volume)
         self.price.hideAxis("left")
-        self.volume.showAxis("right")
+        self.price.showAxis("right")
         self.volume.hideAxis("left")
-        self.price.getAxis("right").setWidth(64)
-        self.volume.getAxis("right").setWidth(64)
+        self.volume.showAxis("right")
+        self.price.hideAxis("bottom")
+        self.volume.hideAxis("bottom")
         self.volume.setXLink(self.price)
+        self.indicator.plot.setXLink(self.price)
+        for plot in (self.price, self.volume, self.indicator.plot):
+            axis = plot.getAxis("right")
+            axis.setWidth(64)
+            axis.enableAutoSIPrefix(False)
+            axis.setStyle(tickTextOffset=6)
+            axis.setTextPen(pg.mkPen(MUTED))
+            axis.setPen(pg.mkPen(BORDER))
+
+        self.volume_date = DateAxis()
+        self.volume.setAxisItems({"bottom": self.volume_date})
+        self.indicator_date = DateAxis()
+        self.indicator.plot.setAxisItems({"bottom": self.indicator_date})
+        for axis in (self.volume_date, self.indicator_date):
+            axis.setStyle(tickTextOffset=6)
+            axis.setTextPen(pg.mkPen(MUTED))
+            axis.setPen(pg.mkPen(BORDER))
+
         self.price.getViewBox().sigXRangeChanged.connect(self._sync_y_range)
-
-        self.date_axis = DateAxis()
-        self.volume.setAxisItems({"bottom": self.date_axis})
-
-        pen = pg.mkPen("#5b6b82", width=1, style=Qt.PenStyle.DashLine)
-        self.vline = pg.InfiniteLine(angle=90, movable=False, pen=pen)
-        self.vline_volume = pg.InfiniteLine(angle=90, movable=False, pen=pen)
-        self.hline = pg.InfiniteLine(angle=0, movable=False, pen=pen)
-        for line in (self.vline, self.hline):
-            self.price.addItem(line, ignoreBounds=True)
-            line.setVisible(False)
-        self.volume.addItem(self.vline_volume, ignoreBounds=True)
-        self.vline_volume.setVisible(False)
-        self.hline.label = pg.InfLineLabel(
-            self.hline,
-            text="",
-            position=0.985,
-            color=TEXT,
-            fill=pg.mkBrush(QColor(20, 26, 36, 230)),
-        )
+        self.boll = BollOverlay(self.price)
+        self.volume_ma = VolumeMAOverlay(self.volume)
+        self.last_line = LastPriceLine(self.price)
+        self.crosshair = Crosshair(self.price, self.volume, self.indicator.plot)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 10)
@@ -89,33 +99,36 @@ class ChartWidget(QWidget):
         self.glw.scene().sigMouseMoved.connect(self._on_mouse)
         self.glw.viewport().installEventFilter(self)
 
-    @staticmethod
-    def _configure_plot(plot: pg.PlotItem, bottom: bool) -> None:
-        plot.setMenuEnabled(False)
-        plot.hideButtons()
-        plot.showGrid(x=False, y=True, alpha=0.12)
-        plot.getViewBox().setMouseEnabled(x=True, y=False)
-        plot.getViewBox().setDefaultPadding(0.02)
-
     @property
     def bars(self) -> Bars | None:
         return self._bars
 
-    def set_bars(self, bars: Bars) -> None:
+    def set_bars(self, bars: Bars, preserve_view: bool = False) -> None:
+        view_dates = (
+            visible_dates(self._bars, self.price.getViewBox())
+            if preserve_view and self._bars is not None
+            else None
+        )
         self._bars = bars
+        self._history.begin()
         self._clear_items()
         x = np.arange(len(bars))
-
-        self._candle = CandleItem(
-            bars.open, bars.high, bars.low, bars.close, UP, DOWN
-        )
+        self._candle = CandleItem(bars.open, bars.high, bars.low, bars.close, UP, DOWN)
         self._candle.setZValue(-10)
         self.price.addItem(self._candle)
+
+        self._close_line = pg.PlotDataItem(
+            x,
+            bars.close,
+            pen=pg.mkPen("#9aa6b8", width=1.1),
+        )
+        self._close_line.setVisible(False)
+        self.price.addItem(self._close_line)
 
         self._volume_factor = 1e8 if bars.is_index else 1e6
         self._volume_unit = "亿手" if bars.is_index else "万手"
         brushes = [
-            pg.mkBrush(QColor(UP if close >= open_ else DOWN))
+            pg.mkBrush(UP if close >= open_ else DOWN)
             for open_, close in zip(bars.open, bars.close)
         ]
         self._volume_bars = pg.BarGraphItem(
@@ -141,32 +154,28 @@ class ChartWidget(QWidget):
             self.price.addItem(item)
             self._ma_items[period] = item
 
-        self._add_last_line(bars.close[-1])
-        self.date_axis.set_dates(bars.dates)
-        self.set_range(self._range_key)
+        self.boll.set_bars(bars)
+        self.volume_ma.set_bars(bars, self._volume_factor)
+        self.indicator.set_bars(bars)
+        self.last_line.set_price(bars.close[-1])
+        self.volume_date.set_dates(bars.dates)
+        self.indicator_date.set_dates(bars.dates)
+        self.price.getViewBox().setLimits(xMin=-1, xMax=max(1, len(bars)))
+        if view_dates is None:
+            self.set_range(self._range_key)
+        else:
+            set_view_dates(self._bars, self.price.getViewBox(), *view_dates)
+        self._history.end()
         self._sync_y_range(None, self.price.getViewBox().viewRange()[0])
         self._update_info(len(bars) - 1)
-
-    def _add_last_line(self, price: float) -> None:
-        pen = pg.mkPen(FAINT, width=1, style=Qt.PenStyle.DotLine)
-        line = pg.InfiniteLine(
-            pos=price,
-            angle=0,
-            pen=pen,
-            label=f"{price:.2f}",
-            labelOpts={
-                "position": 0.985,
-                "color": TEXT,
-                "fill": pg.mkBrush(QColor(20, 26, 36, 220)),
-            },
-        )
-        self.price.addItem(line, ignoreBounds=True)
-        self._last_line = line
 
     def _clear_items(self) -> None:
         if self._candle is not None:
             self.price.removeItem(self._candle)
             self._candle = None
+        if self._close_line is not None:
+            self.price.removeItem(self._close_line)
+            self._close_line = None
         if self._volume_bars is not None:
             self.volume.removeItem(self._volume_bars)
             self._volume_bars = None
@@ -174,26 +183,17 @@ class ChartWidget(QWidget):
             self.price.removeItem(item)
         self._ma_items.clear()
         self._ma_values.clear()
-        if self._last_line is not None:
-            self.price.removeItem(self._last_line)
-            self._last_line = None
 
     def set_range(self, key: str) -> None:
         self._range_key = key
         if self._bars is None or len(self._bars) == 0:
             return
-        days = RANGE_DAYS.get(key)
-        last = len(self._bars) - 1
-        if days is None:
-            start = 0
-        else:
-            cutoff = self._bars.dates[-1] - np.timedelta64(days, "D")
-            start = int(np.searchsorted(self._bars.dates, cutoff))
         view = self.price.getViewBox()
-        view.setXRange(max(0, start - 1), last + 1, padding=0)
+        start = range_start(self._bars, key)
+        view.setXRange(max(0, start - 1), len(self._bars), padding=0)
 
     def _sync_y_range(self, view: object, x_range: Sequence[float]) -> None:
-        """把 y 轴锁到当前可见的 K 线上，滚轮/拖拽后同样生效。"""
+        """把 y 轴锁到当前可见区间，并决定蜡烛或收盘线展示。"""
         if self._bars is None or len(self._bars) == 0:
             return
         left, right = x_range
@@ -209,14 +209,41 @@ class ChartWidget(QWidget):
         self.price.getViewBox().setYRange(low - padding, high + padding, padding=0)
         volume = float(np.nanmax(self._bars.volume[first : last + 1]))
         volume /= self._volume_factor
-        self.volume.getViewBox().setYRange(0, max(volume * 1.12, 1e-9), padding=0)
+        self.volume.getViewBox().setYRange(0, max(volume * 1.25, 1e-9), padding=0)
+        self.indicator.sync_y_range(first, last)
+        dense = last - first + 1 > DENSE_BARS
+        if self._candle is not None:
+            self._candle.setVisible(not dense)
+        if self._close_line is not None:
+            self._close_line.setVisible(dense)
+        self._request_history(first)
+
+    def _request_history(self, first: int) -> None:
+        if self._history.should_request(self._bars, first):
+            self.history_needed.emit()
+
+    def allow_history_request(self) -> None:
+        self._history.allow()
 
     def set_ma_visible(self, visible: bool) -> None:
         self._ma_visible = visible
         for item in self._ma_items.values():
             item.setVisible(visible)
+        self._refresh_info()
+
+    def set_boll_visible(self, visible: bool) -> None:
+        self.boll.set_visible(visible)
+        self._refresh_info()
+
+    def set_indicator(self, kind: str) -> None:
+        self.indicator.set_kind(kind)
         if self._bars is not None:
-            self._update_info(len(self._bars) - 1)
+            left, right = self.price.getViewBox().viewRange()[0]
+            self.indicator.sync_y_range(
+                max(0, int(np.floor(left))),
+                min(len(self._bars) - 1, int(np.ceil(right))),
+            )
+        self._refresh_info()
 
     def export_png(self, path: str) -> bool:
         return self.grab().save(path)
@@ -229,7 +256,10 @@ class ChartWidget(QWidget):
     def _on_mouse(self, position: object) -> None:
         if self._bars is None:
             return
-        if not self.price.sceneBoundingRect().contains(position):
+        in_price = self.price.sceneBoundingRect().contains(position)
+        in_volume = self.volume.sceneBoundingRect().contains(position)
+        in_indicator = self.indicator.plot.sceneBoundingRect().contains(position)
+        if not (in_price or in_volume or in_indicator):
             self._hide_crosshair()
             return
         point = self.price.getViewBox().mapSceneToView(position)
@@ -237,46 +267,34 @@ class ChartWidget(QWidget):
         if index < 0 or index >= len(self._bars):
             self._hide_crosshair()
             return
-        self.vline.setPos(index)
-        self.vline_volume.setPos(index)
-        self.hline.setPos(point.y())
-        self.vline.setVisible(True)
-        self.vline_volume.setVisible(True)
-        self.hline.setVisible(True)
-        self.hline.label.setText(f"{point.y():.2f}")
+        self._hover_index = index
+        self.crosshair.show(index, point.y() if in_price else None)
         self._update_info(index)
 
     def _hide_crosshair(self) -> None:
-        self.vline.setVisible(False)
-        self.vline_volume.setVisible(False)
-        self.hline.setVisible(False)
+        self.crosshair.hide()
+        self._hover_index = None
         if self._bars is not None:
             self._update_info(len(self._bars) - 1)
+
+    def _refresh_info(self) -> None:
+        if self._bars is None:
+            return
+        index = self._hover_index
+        if index is None:
+            index = len(self._bars) - 1
+        self._update_info(index)
 
     def _update_info(self, index: int) -> None:
         if self._bars is None or index < 0 or index >= len(self._bars):
             return
-        bars = self._bars
-        change = bars.pct_chg[index]
-        color = UP if change >= 0 else DOWN
-        volume = bars.volume[index] / self._volume_factor
-        turn = bars.turn[index]
-        turn_text = "—" if np.isnan(turn) else f"{turn:.2f}%"
-        parts = [
-            f'<span style="color:{MUTED}">{bars.dates[index]}</span>',
-            f'开 <span style="color:{color}">{bars.open[index]:.2f}</span>',
-            f'高 <span style="color:{color}">{bars.high[index]:.2f}</span>',
-            f'低 <span style="color:{color}">{bars.low[index]:.2f}</span>',
-            f'收 <span style="color:{color}">{bars.close[index]:.2f}</span>',
-            f'<span style="color:{color}">{change:+.2f}%</span>',
-            f'量 <span style="color:{color}">{volume:.2f}{self._volume_unit}</span>',
-            f"换手 {turn_text}",
-        ]
-        if self._ma_visible:
-            for period, ma_color in MA_COLORS.items():
-                value = self._ma_values[period][index]
-                if not np.isnan(value):
-                    parts.append(
-                        f'<span style="color:{ma_color}">MA{period} {value:.2f}</span>'
-                    )
-        self.info.setText("&nbsp;&nbsp;".join(parts))
+        self.info.update(
+            self._bars,
+            index,
+            ma_values=self._ma_values,
+            ma_visible=self._ma_visible,
+            boll_values=self.boll.values(index),
+            indicator_values=self.indicator.values(index),
+            volume_factor=self._volume_factor,
+            volume_unit=self._volume_unit,
+        )

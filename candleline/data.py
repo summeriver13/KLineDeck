@@ -17,6 +17,7 @@ FREQ_LABELS = {"d": "日K", "w": "周K", "m": "月K"}
 RECENT_DAYS = 365 * 3
 CACHE_TTL = timedelta(hours=6)
 OVERLAP_DAYS = 10
+BACKFILL_DAYS = 365 * 2
 
 _source: MarketDataSource = BaostockSource()
 
@@ -99,3 +100,32 @@ def fetch_bars(
         raise
     cache.save(_source.name, bars, datetime.now())
     return bars
+
+
+def fetch_older(current: Bars) -> Bars:
+    """向更早方向补一段历史，合并后写回缓存。"""
+    if current.full:
+        return current
+    full_start = np.datetime64(_source.full_start(current.freq), "D")
+    earliest = current.dates[0]
+    if earliest <= full_start:
+        return replace(current, full=True)
+    start = max(full_start, earliest - np.timedelta64(BACKFILL_DAYS, "D"))
+    cached = cache.load(_source.name, current.code, current.freq, current.adjust)
+    fetched_at = cached[1] if cached is not None else datetime.now()
+    older = _source.fetch(
+        current.code,
+        current.freq,
+        current.adjust,
+        current.is_index,
+        str(start),
+        str(earliest),
+    )
+    merged = cache.merge(older, current)
+    if len(merged) <= len(current):
+        complete = replace(current, full=True)
+        cache.save(_source.name, complete, fetched_at)
+        return complete
+    merged = replace(merged, full=bool(start <= full_start))
+    cache.save(_source.name, merged, fetched_at)
+    return merged

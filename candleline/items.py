@@ -7,16 +7,13 @@ import pyqtgraph as pg
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtGui import QColor, QPainter, QPen, QPicture
 
+from .indicators import sma
+
 NICE_STEPS = (1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000)
 
 
 def moving_average(values: np.ndarray, window: int) -> np.ndarray:
-    result = np.full(values.shape, np.nan, dtype=float)
-    if window <= 0 or len(values) < window:
-        return result
-    cumulative = np.cumsum(np.insert(values.astype(float), 0, 0.0))
-    result[window - 1 :] = (cumulative[window:] - cumulative[:-window]) / window
-    return result
+    return sma(values, window)
 
 
 def _nice_step(raw: int) -> int:

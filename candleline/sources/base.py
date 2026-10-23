@@ -25,6 +25,7 @@ class MarketDataSource(Protocol):
         adjust: str,
         is_index: bool,
         start: str,
+        end: str | None = None,
     ) -> Bars:
-        """取 start 之后的复权 K 线，按日期升序。"""
+        """取 start 到 end 的复权 K 线，按日期升序；end 为空表示到最新。"""
         ...

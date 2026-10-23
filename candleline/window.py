@@ -2,31 +2,21 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QThreadPool
+from PySide6.QtCore import QThreadPool
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import (
-    QFileDialog,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QMainWindow,
-    QMessageBox,
-    QProgressBar,
-    QSplitter,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox
 
 from . import data
 from .chart import ChartWidget
 from .data import ADJUST_LABELS, FREQ_LABELS, Bars, Stock
+from .header import Header
 from .sidebar import Sidebar
 from .store import Watchlist
 from .tasks import Dispatcher, Worker
-from .theme import BG, DOWN, MUTED, UP
+from .theme import BG, MUTED
 from .toolbar import build_toolbar
+from .window_layout import build_central, build_status
 
 
 class MainWindow(QMainWindow):
@@ -48,9 +38,15 @@ class MainWindow(QMainWindow):
         self._dispatch.failed.connect(self._bars_fail)
         self._full_token = 0
         self._full_pending = False
+        self._full_after_older = False
         self._full_dispatch = Dispatcher(self)
         self._full_dispatch.done.connect(self._full_ok)
         self._full_dispatch.failed.connect(self._full_fail)
+        self._older_token = 0
+        self._older_pending = False
+        self._older_dispatch = Dispatcher(self)
+        self._older_dispatch.done.connect(self._older_ok)
+        self._older_dispatch.failed.connect(self._older_fail)
         self._watchlist = Watchlist()
 
         self._build()
@@ -63,6 +59,8 @@ class MainWindow(QMainWindow):
             on_adjust=self._set_adjust,
             on_range=self._set_range,
             on_ma=self.chart.set_ma_visible,
+            on_boll=self.chart.set_boll_visible,
+            on_indicator=self.chart.set_indicator,
             on_export=self._export,
         )
         self._install_shortcuts()
@@ -77,55 +75,14 @@ class MainWindow(QMainWindow):
         self.sidebar = Sidebar(self._watchlist)
         self.sidebar.stockActivated.connect(self._load_stock)
         self.chart = ChartWidget()
-
-        right = QWidget()
-        layout = QVBoxLayout(right)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        layout.addWidget(self._build_header())
-        layout.addWidget(self.chart, 1)
-
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self.sidebar)
-        splitter.addWidget(right)
-        splitter.setStretchFactor(1, 1)
-        splitter.setChildrenCollapsible(False)
-        self.setCentralWidget(splitter)
-
-        status = self.statusBar()
-        self.status = QLabel("就绪")
-        self.busy = QProgressBar()
-        self.busy.setRange(0, 0)
-        self.busy.setFixedSize(90, 6)
-        self.busy.setTextVisible(False)
-        self.busy.hide()
-        self.source = QLabel(data.source_name().title())
-        status.addWidget(self.status, 1)
-        status.addPermanentWidget(self.busy)
-        status.addPermanentWidget(self.source)
-
-    def _build_header(self) -> QFrame:
-        frame = QFrame()
-        frame.setObjectName("header")
-        layout = QHBoxLayout(frame)
-        layout.setContentsMargins(16, 10, 16, 12)
-        layout.setSpacing(10)
-
-        self.name_label = QLabel("—")
-        self.name_label.setObjectName("title")
-        self.code_label = QLabel("")
-        self.code_label.setObjectName("code")
-        layout.addWidget(self.name_label)
-        layout.addWidget(self.code_label, 0, Qt.AlignmentFlag.AlignBottom)
-        layout.addStretch(1)
-
-        self.price_label = QLabel("—")
-        self.price_label.setObjectName("price")
-        self.change_label = QLabel("")
-        self.change_label.setObjectName("change")
-        layout.addWidget(self.price_label)
-        layout.addWidget(self.change_label, 0, Qt.AlignmentFlag.AlignBottom)
-        return frame
+        self.chart.history_needed.connect(self._load_older)
+        self.header = Header()
+        self.sidebar.watchlistChanged.connect(self._sync_watch)
+        self.header.watchToggled.connect(self.sidebar.toggle_current)
+        self.setCentralWidget(build_central(self.sidebar, self.chart, self.header))
+        self.status, self.busy, self.source = build_status(
+            self, data.source_name().title()
+        )
 
     def _install_shortcuts(self) -> None:
         shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
@@ -138,21 +95,25 @@ class MainWindow(QMainWindow):
     def _load_stock(self, stock: Stock) -> None:
         self._stock = stock
         self.sidebar.set_current(stock)
-        self.name_label.setText(stock.name)
-        self.code_label.setText(stock.code)
-        self.price_label.setText("—")
-        self.change_label.setText("")
+        self.header.set_stock(stock)
+        self._sync_watch()
         self._reload()
+
+    def _sync_watch(self) -> None:
+        self.header.set_watched(self.sidebar.is_watched(self._stock.code))
 
     def _reload(self) -> None:
         self._full_token += 1
         self._full_pending = False
+        self._full_after_older = False
+        self._older_token += 1
+        self._older_pending = False
         key = (self._stock.code, self._freq, self._adjust)
         cached = self._cache.get(key)
         if cached is not None:
-            self._render(cached)
             if self._range == "all" and not cached.full:
                 self._load_full_history()
+            self._render(cached)
             return
         self._bars_token += 1
         token = self._bars_token
@@ -173,9 +134,9 @@ class MainWindow(QMainWindow):
             return
         self._cache[(bars.code, bars.freq, bars.adjust)] = bars
         self._set_busy(None)
-        self._render(bars)
         if self._range == "all" and not bars.full:
             self._load_full_history()
+        self._render(bars)
 
     def _bars_fail(self, token: int, message: str) -> None:
         if token != self._bars_token:
@@ -184,28 +145,15 @@ class MainWindow(QMainWindow):
         self.status.setText("加载失败")
         QMessageBox.warning(self, "加载失败", message)
 
-    def _render(self, bars: Bars) -> None:
-        self.chart.set_bars(bars)
-        last = bars.close[-1]
-        previous = bars.preclose[-1]
-        if np.isnan(previous) and len(bars) > 1:
-            previous = bars.close[-2]
-        change = bars.pct_chg[-1]
-        color = UP if change >= 0 else DOWN
-        self.price_label.setText(f"{last:.2f}")
-        self.price_label.setStyleSheet(f"color: {color};")
-        if np.isnan(previous):
-            self.change_label.setText(f"{change:+.2f}%")
-        else:
-            self.change_label.setText(f"{last - previous:+.2f}   {change:+.2f}%")
-        self.change_label.setStyleSheet(f"color: {color};")
-        self.name_label.setText(self._stock.name)
-        self.code_label.setText(
-            f"{bars.code} · {FREQ_LABELS[bars.freq]} · {ADJUST_LABELS[bars.adjust]}"
-        )
+    def _render(self, bars: Bars, preserve_view: bool = False) -> None:
+        self.chart.set_bars(bars, preserve_view=preserve_view)
+        self.header.set_quote(self._stock, bars)
         self.setWindowTitle(f"{self._stock.name} {bars.code} · CandleLine")
+        hint = "滚轮缩放，拖拽平移"
+        if not bars.full:
+            hint += "，向左自动补历史"
         self.status.setText(
-            f"{len(bars)} 根 · {bars.dates[0]} ~ {bars.dates[-1]} · 滚轮缩放，拖拽平移"
+            f"{len(bars)} 根 · {bars.dates[0]} ~ {bars.dates[-1]} · {hint}"
         )
         source = data.source_name().title()
         self.source.setText(
@@ -226,14 +174,18 @@ class MainWindow(QMainWindow):
 
     def _set_range(self, key: str) -> None:
         self._range = key
-        self.chart.set_range(key)
         bars = self.chart.bars
         if key == "all" and bars is not None and not bars.full:
             self._load_full_history()
+        self.chart.set_range(key)
 
     def _load_full_history(self) -> None:
         if self._full_pending:
             return
+        if self._older_pending:
+            self._full_after_older = True
+            return
+        self._full_after_older = False
         self._full_pending = True
         self._full_token += 1
         self._set_busy(f"正在加载 {self._stock.name} 的全部历史…")
@@ -253,6 +205,7 @@ class MainWindow(QMainWindow):
         if token != self._full_token:
             return
         self._full_pending = False
+        self._full_after_older = False
         self._set_busy(None)
         if not bars.full:
             self.status.setText("完整历史暂不可用，已显示最近数据")
@@ -264,8 +217,57 @@ class MainWindow(QMainWindow):
         if token != self._full_token:
             return
         self._full_pending = False
+        self._full_after_older = False
         self._set_busy(None)
         self.status.setText(f"完整历史加载失败：{message}")
+        self.chart.allow_history_request()
+
+    def _load_older(self) -> None:
+        bars = self.chart.bars
+        if bars is None or bars.full or self._full_pending or self._older_pending:
+            return
+        if (bars.code, bars.freq, bars.adjust) != (
+            self._stock.code,
+            self._freq,
+            self._adjust,
+        ):
+            return
+        self._older_pending = True
+        self._older_token += 1
+        token = self._older_token
+        self._set_busy(f"正在补充 {self._stock.name} 更早的 K 线…")
+        worker = Worker(
+            self._older_dispatch,
+            token,
+            data.fetch_older,
+            bars,
+        )
+        QThreadPool.globalInstance().start(worker)
+
+    def _older_ok(self, token: int, bars: Bars) -> None:
+        if token != self._older_token:
+            return
+        pending_full = self._full_after_older
+        self._full_after_older = False
+        self._older_pending = False
+        self._set_busy(None)
+        self._cache[(bars.code, bars.freq, bars.adjust)] = bars
+        if pending_full and self._range == "all" and not bars.full:
+            self._load_full_history()
+        self._render(bars, preserve_view=True)
+
+    def _older_fail(self, token: int, message: str) -> None:
+        if token != self._older_token:
+            return
+        pending_full = self._full_after_older
+        self._full_after_older = False
+        self._older_pending = False
+        self._set_busy(None)
+        self.status.setText(f"补充历史失败：{message}")
+        if pending_full and self._range == "all":
+            self._load_full_history()
+        else:
+            self.chart.allow_history_request()
 
     def _set_busy(self, message: str | None) -> None:
         if message is None:
