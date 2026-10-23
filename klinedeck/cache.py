@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -28,15 +29,25 @@ ARRAY_FIELDS = (
 PRICE_TOLERANCE = 1e-4
 
 
-def cache_dir() -> Path:
-    override = os.environ.get("CANDLELINE_CACHE_DIR")
-    if override:
-        return Path(override)
+def _cache_roots() -> tuple[Path, Path]:
     if os.name == "nt":
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-        return base / "CandleLine" / "cache"
+        return base / "KLineDeck" / "cache", base / "CandleLine" / "cache"
     base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-    return base / "candleline"
+    return base / "klinedeck", base / "candleline"
+
+
+def cache_dir() -> Path:
+    override = os.environ.get("KLINEDECK_CACHE_DIR")
+    if override:
+        return Path(override)
+    path, legacy = _cache_roots()
+    if not path.exists() and legacy.is_dir():
+        try:
+            shutil.copytree(legacy, path, dirs_exist_ok=True)
+        except OSError:
+            pass
+    return path
 
 
 def _safe(name: str) -> str:

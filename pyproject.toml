@@ -1,7 +1,7 @@
 [project]
-name = "candleline"
+name = "klinedeck"
 version = "0.2.0"
-description = "A 股 K 线终端（Qt + pyqtgraph + Baostock）"
+description = "KLineDeck：A 股 K 线工作台（Qt + pyqtgraph + Baostock）"
 requires-python = ">=3.12"
 dependencies = [
     "baostock>=0.9.4",

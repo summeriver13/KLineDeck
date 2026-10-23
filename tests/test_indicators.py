@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from candleline.indicators import boll, ema, kdj, macd, rsi, sma
+from klinedeck.indicators import boll, ema, kdj, macd, rsi, sma
 
 
 class SmaTest(unittest.TestCase):

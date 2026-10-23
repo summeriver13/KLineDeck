@@ -47,7 +47,7 @@ class Sidebar(QFrame):
         layout.setContentsMargins(16, 18, 16, 14)
         layout.setSpacing(8)
 
-        brand = QLabel("CandleLine")
+        brand = QLabel("KLineDeck")
         brand.setObjectName("brand")
         subtitle = QLabel("A 股行情终端")
         subtitle.setObjectName("subtitle")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import asdict
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from .data import Stock
 
 def config_dir() -> Path:
     base = QStandardPaths.writableLocation(QStandardPaths.AppConfigLocation)
-    path = Path(base) if base else Path.home() / ".candleline"
+    path = Path(base) if base else Path.home() / ".klinedeck"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -21,6 +22,7 @@ def config_dir() -> Path:
 class Watchlist:
     def __init__(self) -> None:
         self.path = config_dir() / "watchlist.json"
+        self._migrate_legacy()
         self._items: list[Stock] = self._load()
 
     @property
@@ -44,6 +46,25 @@ class Watchlist:
         self._items = kept
         self._save()
         return True
+
+    def _migrate_legacy(self) -> None:
+        if self.path.exists():
+            return
+        base = QStandardPaths.writableLocation(QStandardPaths.AppConfigLocation)
+        if not base:
+            return
+        legacy = (
+            Path(base).parent.parent
+            / "CandleLine"
+            / "CandleLine"
+            / "watchlist.json"
+        )
+        if not legacy.is_file():
+            return
+        try:
+            shutil.copyfile(legacy, self.path)
+        except OSError:
+            pass
 
     def _load(self) -> list[Stock]:
         try:

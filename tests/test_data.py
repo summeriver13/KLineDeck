@@ -10,8 +10,8 @@ from datetime import date, timedelta
 
 import numpy as np
 
-from candleline import cache, data, stock_directory
-from candleline.models import Bars, DataError, Stock
+from klinedeck import cache, data, stock_directory
+from klinedeck.models import Bars, DataError, Stock
 
 
 class FakeSource:
@@ -73,15 +73,15 @@ class FetchOlderTest(unittest.TestCase):
         self.old_source = data._source
         data.set_source(self.source)
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.old_cache_dir = os.environ.get("CANDLELINE_CACHE_DIR")
-        os.environ["CANDLELINE_CACHE_DIR"] = self.temp_dir.name
+        self.old_cache_dir = os.environ.get("KLINEDECK_CACHE_DIR")
+        os.environ["KLINEDECK_CACHE_DIR"] = self.temp_dir.name
 
     def tearDown(self) -> None:
         data.set_source(self.old_source)
         if self.old_cache_dir is None:
-            os.environ.pop("CANDLELINE_CACHE_DIR", None)
+            os.environ.pop("KLINEDECK_CACHE_DIR", None)
         else:
-            os.environ["CANDLELINE_CACHE_DIR"] = self.old_cache_dir
+            os.environ["KLINEDECK_CACHE_DIR"] = self.old_cache_dir
         self.temp_dir.cleanup()
 
     def current(self, start: str) -> Bars:

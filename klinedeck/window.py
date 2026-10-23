@@ -23,7 +23,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         pg.setConfigOptions(background=BG, foreground=MUTED, antialias=True)
-        self.setWindowTitle("CandleLine · A 股行情终端")
+        self.setWindowTitle("KLineDeck · A 股行情终端")
         self.resize(1440, 900)
         self.setMinimumSize(1080, 680)
 
@@ -148,7 +148,7 @@ class MainWindow(QMainWindow):
     def _render(self, bars: Bars, preserve_view: bool = False) -> None:
         self.chart.set_bars(bars, preserve_view=preserve_view)
         self.header.set_quote(self._stock, bars)
-        self.setWindowTitle(f"{self._stock.name} {bars.code} · CandleLine")
+        self.setWindowTitle(f"{self._stock.name} {bars.code} · KLineDeck")
         hint = "滚轮缩放，拖拽平移"
         if not bars.full:
             hint += "，向左自动补历史"
