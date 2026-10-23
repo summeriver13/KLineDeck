@@ -99,7 +99,7 @@ class MainWindow(QMainWindow):
         self.busy.setFixedSize(90, 6)
         self.busy.setTextVisible(False)
         self.busy.hide()
-        self.source = QLabel("Baostock")
+        self.source = QLabel(data.source_name().title())
         status.addWidget(self.status, 1)
         status.addPermanentWidget(self.busy)
         status.addPermanentWidget(self.source)
@@ -207,8 +207,9 @@ class MainWindow(QMainWindow):
         self.status.setText(
             f"{len(bars)} 根 · {bars.dates[0]} ~ {bars.dates[-1]} · 滚轮缩放，拖拽平移"
         )
+        source = data.source_name().title()
         self.source.setText(
-            f"{FREQ_LABELS[bars.freq]} · {ADJUST_LABELS[bars.adjust]} · Baostock"
+            f"{FREQ_LABELS[bars.freq]} · {ADJUST_LABELS[bars.adjust]} · {source}"
         )
 
     def _set_freq(self, key: str) -> None:

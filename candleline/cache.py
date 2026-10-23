@@ -1,4 +1,4 @@
-"""K 线磁盘缓存：按标的/周期/复权存 npz，支持增量合并。"""
+"""K 线磁盘缓存：按数据源/标的/周期/复权存 npz，支持增量合并。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import numpy as np
 
 from .models import Bars
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 ARRAY_FIELDS = (
     "dates",
     "open",
@@ -39,14 +39,19 @@ def cache_dir() -> Path:
     return base / "candleline"
 
 
-def cache_path(code: str, freq: str, adjust: str) -> Path:
-    return cache_dir() / f"{code}_{freq}_{adjust}.npz"
+def _safe(name: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in name)
 
 
-def save(bars: Bars, fetched_at: datetime) -> None:
-    path = cache_path(bars.code, bars.freq, bars.adjust)
+def cache_path(source: str, code: str, freq: str, adjust: str) -> Path:
+    return cache_dir() / _safe(source) / f"{code}_{freq}_{adjust}.npz"
+
+
+def save(source: str, bars: Bars, fetched_at: datetime) -> None:
+    path = cache_path(source, bars.code, bars.freq, bars.adjust)
     meta = {
         "version": CACHE_VERSION,
+        "source": source,
         "code": bars.code,
         "freq": bars.freq,
         "adjust": bars.adjust,
@@ -66,8 +71,10 @@ def save(bars: Bars, fetched_at: datetime) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def load(code: str, freq: str, adjust: str) -> tuple[Bars, datetime] | None:
-    path = cache_path(code, freq, adjust)
+def load(
+    source: str, code: str, freq: str, adjust: str
+) -> tuple[Bars, datetime] | None:
+    path = cache_path(source, code, freq, adjust)
     try:
         with np.load(path, allow_pickle=False) as bundle:
             meta = json.loads(str(bundle["meta"]))
@@ -76,7 +83,12 @@ def load(code: str, freq: str, adjust: str) -> tuple[Bars, datetime] | None:
         return None
     if meta.get("version") != CACHE_VERSION:
         return None
-    if (meta.get("code"), meta.get("freq"), meta.get("adjust")) != (code, freq, adjust):
+    if (meta.get("source"), meta.get("code"), meta.get("freq"), meta.get("adjust")) != (
+        source,
+        code,
+        freq,
+        adjust,
+    ):
         return None
     if any(len(value) != len(arrays["dates"]) for value in arrays.values()):
         return None
