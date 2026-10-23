@@ -33,6 +33,13 @@ class Worker(QRunnable):
         try:
             result = self._func(*self._args)
         except Exception as exc:  # 网络与数据异常统一交给界面提示
-            self._dispatcher.failed.emit(self._token, str(exc))
+            self._emit(self._dispatcher.failed, str(exc))
         else:
-            self._dispatcher.done.emit(self._token, result)
+            self._emit(self._dispatcher.done, result)
+
+    def _emit(self, signal: Signal, payload: object) -> None:
+        try:
+            signal.emit(self._token, payload)
+        except RuntimeError:
+            # 窗口已关闭时 QObject 可能已被销毁，后台任务仍在收尾。
+            pass
