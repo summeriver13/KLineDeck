@@ -181,4 +181,4 @@ uv run python -m unittest discover -s tests -v
 
 ## License
 
-[MIT](LICENSE) © 2022 summeriver
+[MIT](LICENSE) © 2022-2026 Xia Jiang
