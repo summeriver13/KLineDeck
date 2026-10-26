@@ -167,6 +167,7 @@ data.set_source(MySource())
 
 ```bash
 uv run python -m unittest discover -s tests -v
+uv run pytest -q
 ```
 
 覆盖指标公式、向前补历史、缓存合并与本地目录搜索。
